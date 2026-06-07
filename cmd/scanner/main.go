@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Manuel-dev01/net-scanner/internal/config"
+	"github.com/Manuel-dev01/net-scanner/internal/dashboard"
 	"github.com/Manuel-dev01/net-scanner/internal/scanner"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -35,7 +37,7 @@ func main() {
 
 	// Verify a subcommand was passed
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: scanner <command> [options]\nCommands:\n  scan --cidr <cidr>  Run a network sweep\n  list                List all tracked subnets\n  diff --cidr <cidr>  Show host status changes between last two scans")
+		fmt.Println("Usage: scanner <command> [options]\nCommands:\n  scan --cidr <cidr>        Run a network sweep\n  list                      List all tracked subnets\n  diff --cidr <cidr>        Show host status changes between last two scans\n  dashboard [--mode poller]  Start traffic analytics dashboard")
 		os.Exit(1)
 	}
 
@@ -65,6 +67,24 @@ func main() {
 			os.Exit(1)
 		}
 		executeDiff(ctx, pool, *cidrFlag)
+
+	case "dashboard":
+		dashCmd := flag.NewFlagSet("dashboard", flag.ExitOnError)
+		modeFlag := dashCmd.String("mode", "poller", "Capture mode: poller or pcap")
+		geoipFlag := dashCmd.String("geoip", "", "Path to GeoLite2-City.mmdb")
+		portFlag := dashCmd.Int("port", 9090, "Prometheus metrics port")
+		dashCmd.Parse(os.Args[2:])
+
+		cfg := config.Load()
+		cfg.CaptureMode = *modeFlag
+		cfg.MetricsPort = *portFlag
+		if *geoipFlag != "" {
+			cfg.GeoIPDBPath = *geoipFlag
+		}
+		if err := dashboard.Run(ctx, pool, cfg); err != nil {
+			slog.Error("Dashboard error", "error", err)
+			os.Exit(1)
+		}
 
 	default:
 		fmt.Printf("Unknown command: %s\n", os.Args[1])
