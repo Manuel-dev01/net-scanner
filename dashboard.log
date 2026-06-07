@@ -1,3 +1,0 @@
-{"time":"2026-06-07T12:12:05.5754011+01:00","level":"INFO","msg":"Traffic capture started","mode":"poller"}
-{"time":"2026-06-07T12:12:05.5760348+01:00","level":"INFO","msg":"HTTP metrics server starting","addr":":9092"}
-exit status 143

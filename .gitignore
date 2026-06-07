@@ -28,6 +28,7 @@ Thumbs.db
 # Logs / temp output
 stdout.txt
 stderr.txt
+*.log
 
 # GeoIP database (download separately)
 *.mmdb
