@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Manuel-dev01/net-scanner/internal/capture"
+	"github.com/Manuel-dev01/net-scanner/internal/metrics"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -49,6 +50,12 @@ type Detector struct {
 func NewDetector(pool *pgxpool.Pool, thresholds Thresholds) *Detector {
 	if thresholds.BytesPerMinuteSpike == 0 {
 		thresholds = DefaultThresholds()
+	}
+	// Pre-initialize the known anomaly series to 0 so the metric is exported
+	// (and the dashboard reads 0) before the first event fires, rather than
+	// being absent and showing "No data".
+	for _, c := range [][2]string{{"spike", "warning"}, {"new_destination", "info"}} {
+		metrics.AnomaliesDetected.WithLabelValues(c[0], c[1]).Add(0)
 	}
 	return &Detector{
 		pool:        pool,
@@ -146,6 +153,7 @@ func (d *Detector) checkNewDestinations(ctx context.Context, flows []capture.Flo
 func (d *Detector) emit(evt Event) {
 	select {
 	case d.events <- evt:
+		metrics.AnomaliesDetected.WithLabelValues(evt.Type, evt.Severity).Inc()
 		slog.Info("Anomaly detected", "type", evt.Type, "severity", evt.Severity, "description", evt.Description)
 	default:
 		// Channel full, drop event

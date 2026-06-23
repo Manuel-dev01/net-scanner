@@ -78,8 +78,8 @@ func Run(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) error {
 	// Start anomaly event persister
 	go detector.PersistEvents(ctx)
 
-	// Start anomaly analyzer (taps the raw flow channel)
-	go anomalyLoop(ctx, flowCh, detector)
+	// Start anomaly analyzer (polls recent flows from the DB)
+	go anomalyLoop(ctx, pool, detector)
 
 	// Start metrics collector
 	collector := metrics.NewCollector(pool, 30*time.Second)
@@ -154,6 +154,12 @@ func enrichLoop(ctx context.Context, rawFlows <-chan capture.FlowRecord, geo *en
 				// Protocol enrichment
 				ef.Protocol = enrichment.IdentifyProtocol(flow.DstPort, flow.Protocol)
 
+				// Update Prometheus counters for this flow
+				metrics.FlowsTotal.WithLabelValues(ef.Protocol, ef.CaptureMode).Inc()
+				metrics.PacketsTotal.WithLabelValues(ef.Protocol).Add(float64(ef.Packets))
+				metrics.BytesTotal.WithLabelValues(ef.Protocol, "sent").Add(float64(ef.BytesSent))
+				metrics.BytesTotal.WithLabelValues(ef.Protocol, "recv").Add(float64(ef.BytesRecv))
+
 				// DNS enrichment (non-blocking)
 				ef.Hostname = dns.Resolve(ctx, flow.DstIP)
 
@@ -219,11 +225,10 @@ func storeLoop(ctx context.Context, enrichedCh <-chan storage.EnrichedFlow, stor
 	}
 }
 
-// anomalyLoop taps the raw flow channel for anomaly detection.
-func anomalyLoop(ctx context.Context, flowCh <-chan capture.FlowRecord, detector *anomaly.Detector) {
-	// We need to read from flowCh but it's already consumed by enrichLoop.
-	// Instead, we'll use a periodic DB-based approach for anomaly detection.
-	// This is a simplified version — in production you'd fan-out the channel.
+// anomalyLoop periodically pulls recent flows from the DB and runs anomaly
+// detection on them. A DB-based approach is used (rather than tapping flowCh)
+// because the raw flow channel is already fully consumed by enrichLoop.
+func anomalyLoop(ctx context.Context, pool *pgxpool.Pool, detector *anomaly.Detector) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
@@ -232,10 +237,36 @@ func anomalyLoop(ctx context.Context, flowCh <-chan capture.FlowRecord, detector
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Anomaly detection runs on DB data periodically
-			// The detector.Analyze can be called with recent flows from DB
+			flows, err := recentFlows(ctx, pool, time.Minute)
+			if err != nil {
+				slog.Warn("Anomaly detection: failed to load recent flows", "error", err)
+				continue
+			}
+			detector.Analyze(ctx, flows)
 		}
 	}
+}
+
+// recentFlows loads flows captured within the given look-back window for analysis.
+func recentFlows(ctx context.Context, pool *pgxpool.Pool, window time.Duration) ([]capture.FlowRecord, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT src_ip, dst_ip, dst_port, protocol, bytes_sent, bytes_recv, packets
+		FROM traffic_flows
+		WHERE captured_at > now() - $1::interval;`, window.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var flows []capture.FlowRecord
+	for rows.Next() {
+		var f capture.FlowRecord
+		if err := rows.Scan(&f.SrcIP, &f.DstIP, &f.DstPort, &f.Protocol, &f.BytesSent, &f.BytesRecv, &f.Packets); err != nil {
+			return nil, err
+		}
+		flows = append(flows, f)
+	}
+	return flows, rows.Err()
 }
 
 // mvRefreshLoop periodically refreshes materialized views.
