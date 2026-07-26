@@ -1,0 +1,41 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+# Leading slash is required: a bare `scanner` matches any path component with
+# that name, which silently ignores everything under internal/scanner/.
+/scanner
+/net-scanner
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / temp output
+stdout.txt
+stderr.txt
+*.log
+
+# GeoIP database (download separately)
+*.mmdb
+
+# Environment files
+.env
+.env.local

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/prometheus-community/pro-bing"
@@ -121,7 +122,9 @@ func pingHost(ip string) (bool, time.Duration) {
 }
 
 func checkTCPPort(ip string, port int) bool {
-	address := fmt.Sprintf("%s:%d", ip, port)
+	// JoinHostPort rather than "%s:%d": an IPv6 literal must be bracketed,
+	// so naive formatting produces an address net.Dial cannot parse.
+	address := net.JoinHostPort(ip, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", address, 1*time.Second)
 	if err != nil {
 		return false
