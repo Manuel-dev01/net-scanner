@@ -4,7 +4,10 @@
 *.dll
 *.so
 *.dylib
-scanner
+# Leading slash is required: a bare `scanner` matches any path component with
+# that name, which silently ignores everything under internal/scanner/.
+/scanner
+/net-scanner
 
 # Test binary, built with `go test -c`
 *.test

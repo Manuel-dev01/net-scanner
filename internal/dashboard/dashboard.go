@@ -111,7 +111,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) error {
 	}()
 
 	fmt.Printf("  ✓ Dashboard running — metrics at http://localhost%s/metrics\n", addr)
-	fmt.Println("  ✓ Press Ctrl+C to stop\n")
+	fmt.Print("  ✓ Press Ctrl+C to stop\n\n")
 
 	// Wait for shutdown
 	<-ctx.Done()

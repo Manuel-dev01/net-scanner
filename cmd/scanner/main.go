@@ -26,9 +26,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Load configuration once; every subcommand shares it.
+	cfg := config.Load()
+
 	// Connect to Database
-	dbStr := "postgres://postgres:devpw@localhost:5433/scanner_db?sslmode=disable"
-	pool, err := pgxpool.New(ctx, dbStr)
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("Database link breakdown", "error", err)
 		os.Exit(1)
@@ -70,17 +72,16 @@ func main() {
 
 	case "dashboard":
 		dashCmd := flag.NewFlagSet("dashboard", flag.ExitOnError)
-		modeFlag := dashCmd.String("mode", "poller", "Capture mode: poller or pcap")
-		geoipFlag := dashCmd.String("geoip", "", "Path to GeoLite2-City.mmdb")
-		portFlag := dashCmd.Int("port", 9090, "Prometheus metrics port")
+		// Flag defaults are seeded from config so the NS_* environment
+		// variables apply unless a flag is explicitly passed.
+		modeFlag := dashCmd.String("mode", cfg.CaptureMode, "Capture mode: poller or pcap")
+		geoipFlag := dashCmd.String("geoip", cfg.GeoIPDBPath, "Path to GeoLite2-City.mmdb")
+		portFlag := dashCmd.Int("port", cfg.MetricsPort, "Prometheus metrics port")
 		dashCmd.Parse(os.Args[2:])
 
-		cfg := config.Load()
 		cfg.CaptureMode = *modeFlag
 		cfg.MetricsPort = *portFlag
-		if *geoipFlag != "" {
-			cfg.GeoIPDBPath = *geoipFlag
-		}
+		cfg.GeoIPDBPath = *geoipFlag
 		if err := dashboard.Run(ctx, pool, cfg); err != nil {
 			slog.Error("Dashboard error", "error", err)
 			os.Exit(1)
@@ -259,20 +260,29 @@ func executeDiff(ctx context.Context, pool *pgxpool.Pool, cidr string) {
 	prevScanID := scanIDs[0]
 	latestScanID := scanIDs[1]
 
-	// SQL self-join mapping to isolate structural changes between the two unique scanning snapshots
+	// SQL self-join mapping to isolate structural changes between the two unique scanning snapshots.
+	//
+	// The comparison uses IS DISTINCT FROM rather than !=. On a FULL OUTER JOIN an IP present in
+	// only one snapshot yields NULL on the other side, and `NULL != true` evaluates to NULL --
+	// which is not true, so plain != silently discards every appeared/disappeared host. IS DISTINCT
+	// FROM is NULL-safe and is the correct expression of the set symmetric difference we want.
 	query := `
 		WITH prev AS (SELECT ip, is_up FROM hosts WHERE scan_id = $1),
-		     curr AS (SELECT ip, is_up FROM hosts WHERE scan_id = $2)
-		SELECT 
-		    COALESCE(prev.ip, curr.ip)::text,
-		    CASE 
-		        WHEN prev.ip IS NULL AND curr.is_up = true THEN 'NEW'
-		        WHEN prev.is_up = false AND curr.is_up = true THEN 'NEW'
-		        WHEN prev.is_up = true AND curr.is_up = false THEN 'REMOVED'
-		        ELSE 'NO_CHANGE'
-		    END as status
-		FROM prev FULL OUTER JOIN curr ON prev.ip = curr.ip
-		WHERE prev.is_up != curr.is_up;`
+		     curr AS (SELECT ip, is_up FROM hosts WHERE scan_id = $2),
+		     drift AS (
+		         SELECT
+		             COALESCE(prev.ip, curr.ip)::text AS ip,
+		             CASE
+		                 WHEN prev.ip IS NULL AND curr.is_up = true THEN 'NEW'
+		                 WHEN prev.is_up = false AND curr.is_up = true THEN 'NEW'
+		                 WHEN curr.ip IS NULL AND prev.is_up = true THEN 'REMOVED'
+		                 WHEN prev.is_up = true AND curr.is_up = false THEN 'REMOVED'
+		                 ELSE 'NO_CHANGE'
+		             END AS status
+		         FROM prev FULL OUTER JOIN curr ON prev.ip = curr.ip
+		         WHERE prev.is_up IS DISTINCT FROM curr.is_up
+		     )
+		SELECT ip, status FROM drift WHERE status <> 'NO_CHANGE' ORDER BY ip;`
 
 	diffRows, err := pool.Query(ctx, query, prevScanID, latestScanID)
 	if err != nil {
